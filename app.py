@@ -1,14 +1,15 @@
-import streamlit as st
 import os
 import tempfile
+import streamlit as st
 
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.document_loaders import UnstructuredHTMLLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
-from langchain_core.runnables import RunnablePassthrough
 
+# -------------------- PAGE CONFIG --------------------
 st.set_page_config(
     page_title="Samsung Washing Machine RAG Chatbot",
     page_icon="🧺",
@@ -16,101 +17,133 @@ st.set_page_config(
 )
 
 st.title("🧺 Samsung Washing Machine RAG Chatbot")
-st.write("Upload a Samsung washing machine manual (HTML) and ask questions.")
+st.write("Upload a Samsung Washing Machine HTML manual and ask questions.")
 
-# API Key
-api_key = st.secrets.get("OPENAI_API_KEY", "")
+# -------------------- SIDEBAR --------------------
+with st.sidebar:
+    st.header("Instructions")
+    st.write("""
+1. Upload the Samsung manual (.html)
+2. Wait for processing
+3. Ask questions about the manual
+""")
 
-if not api_key:
-    st.warning("Please add OPENAI_API_KEY in Streamlit Secrets.")
+# -------------------- API KEY --------------------
+try:
+    api_key = st.secrets["OPENAI_API_KEY"]
+except Exception:
+    st.error("❌ OPENAI_API_KEY not found in Streamlit Secrets.")
     st.stop()
 
 os.environ["OPENAI_API_KEY"] = api_key
 
+
+# -------------------- LOAD RAG --------------------
+@st.cache_resource(show_spinner=False)
+def create_rag_pipeline(html_path):
+
+    loader = UnstructuredHTMLLoader(file_path=html_path)
+    docs = loader.load()
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200
+    )
+
+    splits = splitter.split_documents(docs)
+
+    embeddings = OpenAIEmbeddings(
+        model="text-embedding-3-small"
+    )
+
+    vectorstore = Chroma.from_documents(
+        documents=splits,
+        embedding=embeddings
+    )
+
+    retriever = vectorstore.as_retriever(
+        search_kwargs={"k": 4}
+    )
+
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0
+    )
+
+    prompt = ChatPromptTemplate.from_template(
+        """
+You are a helpful Samsung washing machine assistant.
+
+Answer ONLY using the provided context.
+
+If the answer is not available in the context,
+reply with:
+
+"I couldn't find that information in the uploaded manual."
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+"""
+    )
+
+    rag_chain = (
+        {
+            "context": retriever,
+            "question": RunnablePassthrough()
+        }
+        | prompt
+        | llm
+    )
+
+    return rag_chain
+
+
+# -------------------- FILE UPLOAD --------------------
 uploaded_file = st.file_uploader(
     "Upload Samsung Manual (.html)",
     type=["html", "htm"]
 )
 
-if uploaded_file is not None:
+if uploaded_file:
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp_file:
-        tmp_file.write(uploaded_file.read())
-        html_path = tmp_file.name
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
+        tmp.write(uploaded_file.read())
+        html_path = tmp.name
 
     with st.spinner("Processing document..."):
 
-        loader = UnstructuredHTMLLoader(file_path=html_path)
-        docs = loader.load()
+        try:
+            rag_chain = create_rag_pipeline(html_path)
+            st.success("✅ Document processed successfully!")
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200
-        )
+        except Exception as e:
+            st.error(f"Error while processing document:\n\n{e}")
+            st.stop()
 
-        splits = splitter.split_documents(docs)
+    st.divider()
 
-        embeddings = OpenAIEmbeddings(
-            model="text-embedding-3-small"
-        )
-
-        vectorstore = Chroma.from_documents(
-            documents=splits,
-            embedding=embeddings
-        )
-
-        retriever = vectorstore.as_retriever()
-
-        llm = ChatOpenAI(
-            model="gpt-4o-mini",
-            temperature=0
-        )
-
-        prompt = ChatPromptTemplate.from_template(
-            """
-            You are an assistant for question-answering tasks.
-
-            Use the following pieces of retrieved context
-            to answer the question.
-
-            If you don't know the answer,
-            just say that you don't know.
-
-            Keep the answer concise.
-
-            Question: {question}
-
-            Context:
-            {context}
-
-            Answer:
-            """
-        )
-
-        rag_chain = (
-            {
-                "context": retriever,
-                "question": RunnablePassthrough()
-            }
-            | prompt
-            | llm
-        )
-
-    st.success("Document processed successfully!")
-
-    query = st.text_input(
-        "Ask a question about the washing machine manual:"
+    question = st.text_input(
+        "Ask a question:"
     )
 
     if st.button("Get Answer"):
 
-        if query:
+        if question.strip() == "":
+            st.warning("Please enter a question.")
+        else:
 
             with st.spinner("Generating answer..."):
-                response = rag_chain.invoke(query)
 
-            st.subheader("Answer")
-            st.write(response.content)
+                try:
+                    response = rag_chain.invoke(question)
 
-        else:
-            st.warning("Please enter a question.")
+                    st.subheader("Answer")
+                    st.write(response.content)
+
+                except Exception as e:
+                    st.error(f"Error:\n\n{e}")
