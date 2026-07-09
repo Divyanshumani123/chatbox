@@ -29,13 +29,17 @@ with st.sidebar:
 """)
 
 # -------------------- API KEY --------------------
-try:
-    api_key = st.secrets["OPENAI_API_KEY"]
-except Exception:
-    st.error("❌ OPENAI_API_KEY not found in Streamlit Secrets.")
-    st.stop()
+st.sidebar.title("🔑 OpenAI API Key")
 
-os.environ["OPENAI_API_KEY"] = api_key
+api_key = st.sidebar.text_input(
+    "Enter your OpenAI API Key",
+    type="password",
+    placeholder="sk-..."
+)
+
+if not api_key:
+    st.info("👈 Please enter your OpenAI API Key in the sidebar to begin.")
+    st.stop()
 
 
 # -------------------- LOAD RAG --------------------
